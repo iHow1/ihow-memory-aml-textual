@@ -1,0 +1,7 @@
+{
+  "retrieval": "lexical",
+  "data_dir": "/srv/aml-memory/data",
+  "api_key_file": "/srv/aml-memory/api.key",
+  "host": "127.0.0.1",
+  "port": 8080
+}

@@ -7,24 +7,30 @@ own text, spaces and newlines are kept verbatim. The raw request envelope, not
 the joined text, remains the request identity (see streaming.atomic_add).
 """
 
+import json
+from .validation import InvalidInput
+
 SEPARATOR = '\n'
 
 
-def text(value):
+def text(value, field='content'):
     """Return a string unchanged or join text parts; reject everything else before any model call."""
     if isinstance(value, str):
         return value
     if not isinstance(value, list) or not value:
-        raise ValueError('content must be a string or non-empty text part array')
+        raise InvalidInput('content must be a string or non-empty text part array', field, 'string_or_nonempty_parts_required', value)
     texts = []
-    for part in value:
+    for index, part in enumerate(value):
+        path = f'{field}[{index}]'
         if not isinstance(part, dict):
-            raise ValueError('invalid content part')
+            raise InvalidInput('invalid content part', path, 'object_required', part)
         if part.get('type') != 'text':
             # Never drop an image or unknown part and store the remaining text.
-            raise ValueError('unsupported content part type')
-        if set(part) != {'type', 'text'} or not isinstance(part['text'], str) or not part['text']:
-            raise ValueError('invalid text content part')
+            raise InvalidInput('unsupported content part type', path + '.type', 'text_part_required', part.get('type'))
+        if set(part) != {'type', 'text'}:
+            raise InvalidInput('invalid text content part', path, 'invalid_fields', part)
+        if not isinstance(part['text'], str) or not part['text']:
+            raise InvalidInput('invalid text content part', path + '.text', 'nonempty_string_required', part['text'])
         texts.append(part['text'])
     return SEPARATOR.join(texts)
 
@@ -37,11 +43,43 @@ def normalize_add(payload):
     if not any(isinstance(m, dict) and isinstance(m.get('content'), list) for m in messages):
         return payload
     return {**payload, 'messages': [
-        {**m, 'content': text(m['content'])} if isinstance(m, dict) and isinstance(m.get('content'), list) else m
-        for m in messages]}
+        {**m, 'content': text(m['content'], f'messages[{index}].content')} if isinstance(m, dict) and isinstance(m.get('content'), list) else m
+        for index, m in enumerate(messages)]}
 
 
 def normalize_search(payload):
     if not isinstance(payload, dict) or not isinstance(payload.get('query'), list):
         return payload
-    return {**payload, 'query': text(payload['query'])}
+    return {**payload, 'query': text(payload['query'], 'query')}
+
+
+def tolerant_search(payload):
+    """Search-only coercion; Add and strict normalization stay lossless.
+
+    Long text: strip outer whitespace, then first/last 10,000 Unicode
+    code points (20,000 total, no marker). Short strings stay verbatim.
+    Missing/non-integer top_k defaults to 100; integers clamp to 1..100.
+    Invalid or oversized options are ignored. Owner validation stays strict.
+    """
+    if not isinstance(payload, dict):
+        raise InvalidInput('invalid Search fields', 'payload', 'object_required', payload)
+    value = payload.get('query')
+    if isinstance(value, list):
+        query = SEPARATOR.join(part['text'] for part in value
+            if isinstance(part, dict) and part.get('type') == 'text'
+            and isinstance(part.get('text'), str) and part['text'].strip())
+    else:
+        query = value
+    if not isinstance(query, str) or not query.strip():
+        raise InvalidInput('invalid Search', 'query', 'nonempty_text_required', value)
+    if len(query) > 20000:
+        query = query.strip()
+        if len(query) > 20000:
+            query = query[:10000] + query[-10000:]
+    top = payload.get('top_k')
+    top = min(100, max(1, top)) if type(top) is int else 100
+    options = payload.get('options', [])
+    if (not isinstance(options, list) or any(not isinstance(x, str) for x in options)
+            or len(json.dumps(options)) > 20000):
+        options = []
+    return {'user_id': payload.get('user_id'), 'query': query, 'top_k': top, 'options': options}

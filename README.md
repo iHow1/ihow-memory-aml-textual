@@ -49,7 +49,7 @@ network calls apart from the one-time `tiktoken` vocabulary download.
    ```
 
 2. Copy `config.example.json` and adjust the paths. The lexical configuration
-   has exactly five fields, and all paths must be absolute:
+   has five required fields and an optional boolean `coding_search_tolerant`, and all paths must be absolute:
 
    | Field | Meaning |
    |---|---|
@@ -99,7 +99,8 @@ Behaviour worth knowing:
   retry requests itself.
 - Other errors: 401 (auth), 413 (body size), 422 (invalid input), 503
   (backend unavailable).
-- The service writes no request or payload logs.
+- The service writes no request or payload values to logs. HTTP 422 rejection
+  logs contain only fixed field paths, error types, JSON types and lengths.
 
 ## Scope of this repository
 
@@ -109,6 +110,29 @@ and embedding modules are not included; that mode is not part of this entry
 and fails at import. `model.py`, `span_model.py` and `unique_span_model.py` are
 included because the lexical code imports them (the annotation prompt text is
 part of the database identity hash), but they make no calls in lexical mode.
+
+## Coding track version
+
+Branch `coding-tolerant-f4fb4d2` publishes the coding track deployment from
+private source commit `f4fb4d297262880b324ad2b9fc220b172ec95589`, matching the
+runtime source in deployed image `ihow-aml-coding:f4fb4d2`. It is based on the
+Textual `lexical-107ac55` service. Add and Search make zero model calls.
+
+Set `"coding_search_tolerant": true` in the lexical config for the coding
+instance. The default and explicit `false` preserve strict Search behavior.
+Only Search is relaxed: long queries are reduced to their first and last
+10,000 Unicode characters after trimming outer whitespace; unknown fields
+are ignored; usable text parts are joined; integer `top_k` is clamped to
+1–100 and other values default to 100; invalid or oversized options are
+ignored. Empty text still returns 422. Add validation, authentication,
+request size limits and user isolation retain their existing behavior.
+
+The added regression test compares strict responses with the actual code
+from public parent commit `c45d23c5fb8ff1e2c44ed3470704d2e9ec51a741`, which
+published private baseline `107ac55`. `SOURCE_MANIFEST.json` discloses this
+test-only revision adjustment and hashes both its original and public forms.
+Internal development documentation is represented by this section rather
+than copied into the public runtime tree.
 
 ## License
 

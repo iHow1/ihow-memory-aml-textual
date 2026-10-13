@@ -1,10 +1,11 @@
 {
-  "private_source_commit": "107ac55c1ccf4049d0157955016edb5e3bbf2926",
-  "note": "Each file below is byte-identical to the deployed service source at this commit.",
+  "private_source_commit": "f4fb4d297262880b324ad2b9fc220b172ec95589",
+  "public_baseline_commit": "c45d23c5fb8ff1e2c44ed3470704d2e9ec51a741",
+  "note": "Runtime files below are byte-identical to the deployed source at the private commit. The Search regression test has only the disclosed public baseline revision adjustment.",
   "files": {
     "experimental/source_memory/__init__.py": "29f780b9fcb8b88ca36b0b189f9e942c1be5de4ae43c48070967ac48f39a899b",
-    "experimental/source_memory/content.py": "a72cdb6002abab5e6177e7f2ddb729dc53555d9a87cba98d6a37aed8874d342e",
-    "experimental/source_memory/deployment.py": "f27e9c49221d4e9504d84e68e634abdcb412d1b3fcb0aa23bb56f7970ca343a3",
+    "experimental/source_memory/content.py": "294e6f2e48a20ce5edcfa9344daa01ed842547fe688186ac11665f9e9a858a65",
+    "experimental/source_memory/deployment.py": "2f7bc1041dd646465ce56498770fd02af36585567f39f38c12e1c082f2c01df8",
     "experimental/source_memory/lexical.py": "ab9b30d0b7cafbfdb748c0c035f3d9a0b649ef7f8b7138ba991111c4787f3794",
     "experimental/source_memory/model.py": "35586c9d06cbeb02d42a954597b1cb0a46e5b7145ac5047be41439301bcb6bd3",
     "experimental/source_memory/span_model.py": "9c2c3c7a8baa7fc12a6f14e86932a01babe1ede83db3b942242e0b9a4cedc5b1",
@@ -12,6 +13,14 @@
     "experimental/source_memory/streaming.py": "2fab5a8afc4fedef048576ff033e22a6d17ee7e8417f03961e2529455af83c0a",
     "experimental/source_memory/unique_span_model.py": "f666ae0a9e03acc2345ba0ef52d2977b4437db5ca2db919a57697855951525a8",
     "tests/test_source_lexical.py": "6361592f654800436e3bd55a0d93ec46955b3679a0fe357b54dfde497c783eea",
-    "tests/test_source_memory_spans.py": "e905460b22f9ab7b7831553b34629cdf929979cf3f95fec5ec926bd8d96f2f4f"
+    "tests/test_source_memory_spans.py": "e905460b22f9ab7b7831553b34629cdf929979cf3f95fec5ec926bd8d96f2f4f",
+    "experimental/source_memory/validation.py": "dadb70ffbc446ab97fb7ac2999c7c04b5056773b13dd5c628a6899507b414428",
+    "tests/test_source_search_tolerant.py": "bf202e170ee3af1a0c9df6ccbf8479d284b6ca0a22cfbf13507d9aea2651f3ce"
+  },
+  "adjustments": {
+    "tests/test_source_search_tolerant.py": {
+      "change": "Baseline git revision points to the byte-identical public parent commit instead of the private source revision.",
+      "private_source_sha256": "2176c50d681cc91134f48f6fd4192c70a2693cda8211f76ae8b08f7f7a39e95d"
+    }
   }
 }

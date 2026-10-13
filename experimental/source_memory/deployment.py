@@ -18,7 +18,8 @@ from .store import Memory, Conflict, Incomplete, digest
 from .lexical import NoAnnotator
 from .unique_span_model import UniqueSpanAnnotator
 from .streaming import batches, atomic_add
-from .content import normalize_add, normalize_search
+from .content import normalize_add, normalize_search, tolerant_search
+from .validation import InvalidInput, log_rejection
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,10 +42,13 @@ MODEL_FIELDS = {'data_dir', 'model_path', 'python_path', 'api_key_file',
 
 def read_config(path):
     value = json.loads(Path(path).read_text())
-    # Two exact shapes: model-free lexical (no model/embedding fields at all) or
-    # the original model candidate. A partial mix is rejected, not defaulted.
-    if not isinstance(value, dict) or set(value) not in (LEXICAL_FIELDS, MODEL_FIELDS):
+    # Two exact shapes plus one optional boolean: model-free lexical (no
+    # model/embedding fields) or the model candidate. Partial mixes fail closed.
+    if (not isinstance(value, dict)
+            or set(value) - {'coding_search_tolerant'} not in (LEXICAL_FIELDS, MODEL_FIELDS)):
         raise ValueError('invalid configuration fields')
+    if 'coding_search_tolerant' in value and type(value['coding_search_tolerant']) is not bool:
+        raise ValueError('coding_search_tolerant must be a boolean')
     if 'retrieval' in value and value['retrieval'] != 'lexical':
         raise ValueError('invalid retrieval mode')
     for k in sorted(set(value) & {'data_dir', 'model_path', 'python_path', 'api_key_file', 'model_key_file'}):
@@ -92,12 +96,15 @@ class DeploymentMemory:
     transport=None with embedder=None is the model-free lexical mode: raw
     messages only, owner-local BM25, no model or embedding call anywhere.
     """
-    def __init__(self, directory, transport, embedder, encoding):
+    def __init__(self, directory, transport, embedder, encoding, *, coding_search_tolerant=False):
+        if type(coding_search_tolerant) is not bool:
+            raise ValueError('coding_search_tolerant must be a boolean')
         if transport is None and embedder is not None:
             raise ValueError('lexical mode takes no embedder')
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.transport, self.embedder, self.encoding = transport, embedder, encoding
+        self.coding_search_tolerant = coding_search_tolerant
         self.lock = threading.RLock()
 
     def annotator(self, complete):
@@ -123,19 +130,32 @@ class DeploymentMemory:
             return atomic_add(memory, payload, chunks, execute, source=source)
 
     def search(self, payload):
-        source, payload = payload, normalize_search(payload)
-        if not isinstance(payload, dict) or not {'user_id', 'query', 'top_k'} <= set(payload):
-            raise ValueError('invalid Search fields')
+        source, payload = payload, (tolerant_search(payload) if self.coding_search_tolerant
+                                    else normalize_search(payload))
+        if not isinstance(payload, dict):
+            raise InvalidInput('invalid Search fields', 'payload', 'object_required', payload)
+        for field in ('user_id', 'query', 'top_k'):
+            if field not in payload:
+                raise InvalidInput('invalid Search fields', field, 'required_field', None)
         if set(payload) - {'user_id', 'query', 'top_k', 'options'}:
-            raise ValueError('invalid Search fields')
+            raise InvalidInput('invalid Search fields', 'payload', 'unknown_fields', payload)
         owner, query, top = payload['user_id'], payload['query'], payload['top_k']
         options = payload.get('options', [])
-        if (not isinstance(owner, str) or not 0 < len(owner) <= 512
-                or not isinstance(query, str) or not query.strip() or len(query) > 20000
-                or type(top) is not int or not 1 <= top <= 100
-                or not isinstance(options, list) or any(not isinstance(x, str) for x in options)
-                or len(json.dumps(options)) > 20000):
-            raise ValueError('invalid Search')
+        if not isinstance(owner, str) or not 0 < len(owner) <= 512:
+            raise InvalidInput('invalid Search', 'user_id', 'string_length_1_512', owner)
+        if not isinstance(query, str) or not query.strip():
+            raise InvalidInput('invalid Search', 'query', 'nonempty_string_required', query)
+        if len(query) > 20000:
+            raise InvalidInput('invalid Search', 'query', 'max_length_20000', query)
+        if type(top) is not int or not 1 <= top <= 100:
+            raise InvalidInput('invalid Search', 'top_k', 'integer_range_1_100', top)
+        if not isinstance(options, list):
+            raise InvalidInput('invalid Search', 'options', 'string_array_required', options)
+        for index, option in enumerate(options):
+            if not isinstance(option, str):
+                raise InvalidInput('invalid Search', f'options[{index}]', 'string_required', option)
+        if len(json.dumps(options)) > 20000:
+            raise InvalidInput('invalid Search', 'options', 'max_serialized_length_20000', json.dumps(options))
         with self.lock:
             # Search has no official request_id. Include the committed memory
             # revision so the same question after an incremental Add is new work.
@@ -283,7 +303,8 @@ def server(memory, *, key, host='127.0.0.1', port=0,
                 return self.send(*body)
             try:
                 payload = json.loads(body)
-            except (ValueError, UnicodeError):
+            except (ValueError, UnicodeError) as error:
+                log_rejection(error, body, 'body', 'invalid_json')
                 return self.send(422, {'error': 'invalid_input_or_model_output'})
             if not self.server.operation.acquire(timeout=self.server.queue_timeout):
                 return self.send(429, {'error': 'capacity_busy'})
@@ -299,15 +320,19 @@ def server(memory, *, key, host='127.0.0.1', port=0,
             """The body bytes, or an error (status, value) pair."""
             try:
                 if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1:
-                    raise ValueError('invalid HTTP framing')
-                length = int(self.headers['Content-Length'])
+                    raise InvalidInput('invalid HTTP framing', 'body', 'invalid_framing', None)
+                try:
+                    length = int(self.headers['Content-Length'])
+                except ValueError:
+                    raise InvalidInput('invalid HTTP framing', 'body', 'invalid_framing', None) from None
                 if not 0 < length <= 2 * 1024 * 1024:
                     return 413, {'error': 'body_too_large_or_empty'}
                 body = self.rfile.read(length)
                 if len(body) != length:
-                    raise ValueError('incomplete body')
+                    raise InvalidInput('incomplete body', 'body', 'incomplete_body', body)
                 return body
-            except (ValueError, TypeError, KeyError, UnicodeError):
+            except (ValueError, TypeError, KeyError, UnicodeError) as error:
+                log_rejection(error, None, 'body', 'invalid_framing')
                 return 422, {'error': 'invalid_input_or_model_output'}
             except Exception:
                 return 503, {'error': 'backend_unavailable'}
@@ -319,7 +344,9 @@ def server(memory, *, key, host='127.0.0.1', port=0,
                 return 409, {'error': 'request_conflict'}
             except Incomplete:
                 return 503, {'error': 'incomplete_no_automatic_model_retry'}
-            except (ValueError, TypeError, KeyError, UnicodeError):
+            except (ValueError, TypeError, KeyError, UnicodeError) as error:
+                # Unknown backend errors deliberately omit their messages too.
+                log_rejection(error, payload)
                 return 422, {'error': 'invalid_input_or_model_output'}
             except Exception:
                 return 503, {'error': 'backend_unavailable'}
@@ -404,7 +431,8 @@ def main():
                                python_path=config['python_path'], threads=config['embedding_threads'])
         try:
             memory = DeploymentMemory(Path(config['data_dir']) / 'owners', transport,
-                                      embedder, tiktoken.get_encoding('o200k_base'))
+                                      embedder, tiktoken.get_encoding('o200k_base'),
+                                      coding_search_tolerant=config.get('coding_search_tolerant', False))
             httpd = server(memory, key=api_key, host=config['host'], port=config['port'])
             try:
                 httpd.serve_forever()
@@ -423,7 +451,8 @@ def serve_lexical(config):
     import tiktoken
     with deployment_lock(config['data_dir']):
         memory = DeploymentMemory(Path(config['data_dir']) / 'owners', None, None,
-                                  tiktoken.get_encoding('o200k_base'))
+                                  tiktoken.get_encoding('o200k_base'),
+                                  coding_search_tolerant=config.get('coding_search_tolerant', False))
         httpd = server(memory, key=api_key, host=config['host'], port=config['port'])
         try:
             httpd.serve_forever()

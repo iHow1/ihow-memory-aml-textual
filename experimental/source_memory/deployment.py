@@ -19,6 +19,7 @@ from .lexical import NoAnnotator
 from .unique_span_model import UniqueSpanAnnotator
 from .streaming import batches, atomic_add
 from .content import normalize_add, normalize_search
+from .coding_compact import compact_search, validate_budgets, MAX_ROW_BYTES, MAX_RESPONSE_BYTES
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,12 +40,29 @@ MODEL_FIELDS = {'data_dir', 'model_path', 'python_path', 'api_key_file',
                 'model_key_file', 'host', 'port', 'embedding_threads', 'stages'}
 
 
+# Organizer approved 8192 B/item and 65536 B/full response on 2026-10-29.
+COMPACT_FIELDS = {'coding_compact_search', 'coding_compact_max_row_bytes',
+                  'coding_compact_max_response_bytes'}
+
+
+def compact_options(value):
+    enabled = value.get('coding_compact_search', False)
+    if type(enabled) is not bool:
+        raise ValueError('coding_compact_search must be a boolean')
+    row = value.get('coding_compact_max_row_bytes', MAX_ROW_BYTES)
+    response = value.get('coding_compact_max_response_bytes', MAX_RESPONSE_BYTES)
+    validate_budgets(row, response)
+    return {'coding_compact_search': enabled,
+            'coding_compact_max_row_bytes': row,
+            'coding_compact_max_response_bytes': response}
+
+
 def read_config(path):
     value = json.loads(Path(path).read_text())
-    # Two exact shapes: model-free lexical (no model/embedding fields at all) or
-    # the original model candidate. A partial mix is rejected, not defaulted.
-    if not isinstance(value, dict) or set(value) not in (LEXICAL_FIELDS, MODEL_FIELDS):
+    # Two exact base shapes plus optional compact settings. Partial mixes fail closed.
+    if not isinstance(value, dict) or set(value) - COMPACT_FIELDS not in (LEXICAL_FIELDS, MODEL_FIELDS):
         raise ValueError('invalid configuration fields')
+    compact_options(value)
     if 'retrieval' in value and value['retrieval'] != 'lexical':
         raise ValueError('invalid retrieval mode')
     for k in sorted(set(value) & {'data_dir', 'model_path', 'python_path', 'api_key_file', 'model_key_file'}):
@@ -92,7 +110,13 @@ class DeploymentMemory:
     transport=None with embedder=None is the model-free lexical mode: raw
     messages only, owner-local BM25, no model or embedding call anywhere.
     """
-    def __init__(self, directory, transport, embedder, encoding):
+    def __init__(self, directory, transport, embedder, encoding, *,
+                 coding_compact_search=False, coding_compact_max_row_bytes=MAX_ROW_BYTES,
+                 coding_compact_max_response_bytes=MAX_RESPONSE_BYTES):
+        options = compact_options(locals())
+        self.coding_compact_search = options['coding_compact_search']
+        self.coding_compact_max_row_bytes = options['coding_compact_max_row_bytes']
+        self.coding_compact_max_response_bytes = options['coding_compact_max_response_bytes']
         if transport is None and embedder is not None:
             raise ValueError('lexical mode takes no embedder')
         self.directory = Path(directory)
@@ -132,7 +156,7 @@ class DeploymentMemory:
         options = payload.get('options', [])
         if (not isinstance(owner, str) or not 0 < len(owner) <= 512
                 or not isinstance(query, str) or not query.strip() or len(query) > 20000
-                or type(top) is not int or not 1 <= top <= 100
+                or type(top) is not int or not 1 <= top <= 1000
                 or not isinstance(options, list) or any(not isinstance(x, str) for x in options)
                 or len(json.dumps(options)) > 20000):
             raise ValueError('invalid Search')
@@ -151,7 +175,10 @@ class DeploymentMemory:
             for row in result['data']:
                 if row.get('created_at') is None:
                     row.pop('created_at', None)
-            return result
+            return compact_search(result,
+                max_row_bytes=self.coding_compact_max_row_bytes,
+                max_response_bytes=self.coding_compact_max_response_bytes
+            ) if self.coding_compact_search else result
 
     def health(self):
         # No counts, owner identifiers, prompt bodies or billing data in public health.
@@ -404,7 +431,7 @@ def main():
                                python_path=config['python_path'], threads=config['embedding_threads'])
         try:
             memory = DeploymentMemory(Path(config['data_dir']) / 'owners', transport,
-                                      embedder, tiktoken.get_encoding('o200k_base'))
+                                      embedder, tiktoken.get_encoding('o200k_base'), **compact_options(config))
             httpd = server(memory, key=api_key, host=config['host'], port=config['port'])
             try:
                 httpd.serve_forever()
@@ -423,7 +450,7 @@ def serve_lexical(config):
     import tiktoken
     with deployment_lock(config['data_dir']):
         memory = DeploymentMemory(Path(config['data_dir']) / 'owners', None, None,
-                                  tiktoken.get_encoding('o200k_base'))
+                                  tiktoken.get_encoding('o200k_base'), **compact_options(config))
         httpd = server(memory, key=api_key, host=config['host'], port=config['port'])
         try:
             httpd.serve_forever()

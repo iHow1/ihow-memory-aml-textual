@@ -1,5 +1,8 @@
 # Technical report: iHow Memory AML Textual (lexical, zero-model)
 
+Sections 1–9 describe the Textual baseline. Section 10 describes the separate
+Coding new version on this branch and its changed Search return behavior.
+
 ## 1. Summary
 
 The entry is a memory service that stores conversation messages verbatim and
@@ -155,3 +158,34 @@ roughly linearly with the user's history.
 
 Official evaluation results will be added here once available. No benchmark
 score is claimed in this report.
+
+## 10. Coding new version: lexical-coding-2b1e3b3
+
+This version derives directly from `lexical-107ac55` at private source commit
+`2b1e3b3aeafd17928b46ff22378d7f095cc57978`; it does not derive from the
+tolerant Coding branch. Add, source storage and candidate ranking are
+unchanged. Search strictly accepts integer `top_k` from 1–1000, without
+coercion or clamping, and leaves query validation unchanged. In the separate
+lexical configuration, Add and Search make zero model/embedding calls.
+
+An optional deterministic Search projection extracts source-backed file
+paths, complete diff hunks, explicit edit actions and repair/reason lines.
+Actions remain execution-unverified. Following the original candidate order,
+only fully returned `File:` lines claim a file; later candidates omit claimed
+files. The diff-chain idea was inspired by Hy-Memory and independently
+implemented without copying code. The default flag remains false; the Coding
+example explicitly enables it with 8192-byte rows and a 65536-byte complete
+successful response budget, measured using
+`json.dumps(value, ensure_ascii=False, allow_nan=False).encode('utf-8')`.
+Complete objects, metadata, outer structure, escapes, spaces and markers
+count; HTTP headers do not. Content can be prefix-truncated with
+`[compact: truncated]` while preserving valid UTF-8/JSON and other fields.
+
+This projection is lossy: later changes to the same file and complete
+candidates may be omitted, and fewer than `top_k` results may return. A marker
+does not certify edit execution, success or complete coverage. The precise
+extraction limits, byte accounting and omission rules are disclosed in the
+README. Local offline tests/measurements do not establish Coding Agent
+receiving limits, deployment capacity, runtime latency or benchmark scores.
+This package has not been deployed, registered or evaluated in Coding
+Smoke/Full for this version.

@@ -1,0 +1,10 @@
+{
+  "retrieval": "lexical",
+  "data_dir": "/srv/aml-memory-coding-new/data",
+  "api_key_file": "/srv/aml-memory-coding-new/api.key",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "coding_compact_search": true,
+  "coding_compact_max_row_bytes": 8192,
+  "coding_compact_max_response_bytes": 65536
+}

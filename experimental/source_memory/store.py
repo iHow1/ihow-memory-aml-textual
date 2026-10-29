@@ -169,7 +169,7 @@ class Memory:
     def search(self,payload):
         if not isinstance(payload,dict) or not {'user_id','query','top_k'}<=set(payload) or set(payload)-{'user_id','query','top_k','options'}:raise ValueError('invalid Search fields')
         owner=payload['user_id'];query=payload['query'];top=payload['top_k'];options=payload.get('options',[])
-        if not isinstance(owner,str) or not owner or not isinstance(query,str) or not query.strip() or len(query)>20000 or type(top) is not int or not 1<=top<=100:raise ValueError('invalid Search')
+        if not isinstance(owner,str) or not owner or not isinstance(query,str) or not query.strip() or len(query)>20000 or type(top) is not int or not 1<=top<=1000:raise ValueError('invalid Search')
         if not isinstance(options,list) or any(not isinstance(x,str) for x in options) or len(json.dumps(options))>20000:raise ValueError('invalid options')
         with self.connect() as db:
             db.execute('BEGIN')

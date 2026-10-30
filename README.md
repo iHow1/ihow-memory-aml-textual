@@ -15,8 +15,9 @@ API. This branch packages the separate Coding new version described below.
 
 `SOURCE_MANIFEST.json` lists the SHA-256 of every source file and the private
 development commit they were copied from, with test-only adjustments disclosed.
-This Coding package has only been prepared locally; deployment, registration,
-Coding Smoke and Full have not been performed for this version. Method details
+This Coding package is deployed as an isolated service with an empty state;
+registration, Coding Smoke and Full have not been performed for this version.
+Method details
 are in [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md);
 origins and references are in [PROVENANCE.md](PROVENANCE.md).
 

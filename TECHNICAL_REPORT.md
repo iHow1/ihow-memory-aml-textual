@@ -187,5 +187,5 @@ does not certify edit execution, success or complete coverage. The precise
 extraction limits, byte accounting and omission rules are disclosed in the
 README. Local offline tests/measurements do not establish Coding Agent
 receiving limits, deployment capacity, runtime latency or benchmark scores.
-This package has not been deployed, registered or evaluated in Coding
-Smoke/Full for this version.
+This package is deployed as an isolated service with an empty state. It has
+not been registered or evaluated in Coding Smoke/Full for this version.

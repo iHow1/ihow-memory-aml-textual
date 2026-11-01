@@ -98,7 +98,9 @@ sees source text rather than summaries.
 - On shutdown, waiting requests receive 429 with `Retry-After: 60` without
   touching storage; only the running request finishes.
 - 30-second socket timeout for reading a request.
-- No request, payload or access logging in the service.
+- No request values, payload values or access logging in the service.
+  The deployed tolerant version adds redacted validation and tolerance
+  metadata warnings; see section 10.
 - Data lives only under the configured `data_dir`. Deleting that directory
   removes all stored evaluation data; operators should do so after the
   evaluation as required by the benchmark's data rules.
@@ -155,3 +157,13 @@ roughly linearly with the user's history.
 
 Official evaluation results will be added here once available. No benchmark
 score is claimed in this report.
+
+## 10. Textual track deployed version
+
+The registered version name remains `lexical-107ac55`, and `main` retains
+the registration-time source. This branch publishes the `d57b845` tolerant
+Search code used by the Textual service since `2026-10-23T15:06Z` with
+`coding_search_tolerant: true`. Subsequent Textual retrieval ran on this
+changed code. See [TEXT_TRACK_CHANGE_NOTE.md](TEXT_TRACK_CHANGE_NOTE.md) for
+the deployment history, the input rules and their effects, and the October
+2026 disclosure to the organizers.

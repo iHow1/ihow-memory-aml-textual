@@ -11,9 +11,10 @@ track, implementing the `/add` and `/search` endpoints of the memory API.
 - **Zero model calls** in both Add and Search. The only third-party runtime
   package is `tiktoken`.
 
-`SOURCE_MANIFEST.json` lists the SHA-256 of every source file and the private
-development commit they were copied from. The deployed service runs exactly
-these files. Method details are in [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md);
+`SOURCE_MANIFEST.json` lists the SHA-256 of the runtime and test files and the
+private development commit they were copied from. On this branch, runtime
+files match the archived Textual deployment source at `d57b845` byte for byte.
+Method details are in [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md);
 origins and references are in [PROVENANCE.md](PROVENANCE.md).
 
 ## Requirements
@@ -101,6 +102,8 @@ Behaviour worth knowing:
   (backend unavailable).
 - The service writes no request or payload values to logs. HTTP 422 rejection
   logs contain only fixed field paths, error types, JSON types and lengths.
+  Tolerated Search inputs also emit warnings with this metadata; unknown
+  fields are logged only as a count, without their names or values.
 
 ## Scope of this repository
 
@@ -118,14 +121,33 @@ private source commit `f4fb4d297262880b324ad2b9fc220b172ec95589`, matching the
 runtime source in deployed image `ihow-aml-coding:f4fb4d2`. It is based on the
 Textual `lexical-107ac55` service. Add and Search make zero model calls.
 
-Set `"coding_search_tolerant": true` in the lexical config for the coding
-instance. The default and explicit `false` preserve strict Search behavior.
-Only Search is relaxed: long queries are reduced to their first and last
-10,000 Unicode characters after trimming outer whitespace; unknown fields
-are ignored; usable text parts are joined; integer `top_k` is clamped to
-1–100 and other values default to 100; invalid or oversized options are
-ignored. Empty text still returns 422. Add validation, authentication,
-request size limits and user isolation retain their existing behavior.
+That historical branch rejects empty text with 422. The Textual deployment
+published on this branch has the later behavior described below.
+
+## Textual track deployed version
+
+Branch `text-tolerant-d57b845` publishes the Textual runtime from private
+source commit `d57b845ef9a34e9e983e4b98ee50f064e6849c10`. The registered
+version name remains `lexical-107ac55`; `main` retains the registration-time
+source. Since `2026-10-23T15:06Z`, the Textual service has used the `107ac55`
+baseline plus the `d57b845` tolerant Search changes, with
+`"coding_search_tolerant": true`. Its URL, key and previously stored data
+were unchanged.
+
+With tolerance enabled, queries longer than 20,000 Unicode code points are
+trimmed at their outer whitespace and, if still too long, reduced to their
+first and last 10,000 code points. Short strings stay verbatim. Usable text
+parts are joined with newlines; missing, non-text or whitespace-only queries
+return HTTP 200 with `{"data": []}` after object and user validation, without
+opening or creating an owner database. Integer `top_k` is clamped to 1–100;
+missing or non-integer values default to 100. Invalid or oversized options
+and unknown fields are ignored. These rules change retrieval behavior; later
+Textual retrieval ran on this changed code. The default and explicit `false`
+retain strict Search validation. Add validation, authentication, request size
+limits and user isolation retain their existing behavior.
+
+See [TEXT_TRACK_CHANGE_NOTE.md](TEXT_TRACK_CHANGE_NOTE.md) for the deployment
+history, reason for the change and its effects.
 
 The added regression test compares strict responses with the actual code
 from public parent commit `c45d23c5fb8ff1e2c44ed3470704d2e9ec51a741`, which

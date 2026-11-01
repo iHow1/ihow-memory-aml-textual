@@ -8,7 +8,7 @@ the joined text, remains the request identity (see streaming.atomic_add).
 """
 
 import json
-from .validation import InvalidInput
+from .validation import InvalidInput, log_tolerance
 
 SEPARATOR = '\n'
 
@@ -59,27 +59,43 @@ def tolerant_search(payload):
     Long text: strip outer whitespace, then first/last 10,000 Unicode
     code points (20,000 total, no marker). Short strings stay verbatim.
     Missing/non-integer top_k defaults to 100; integers clamp to 1..100.
-    Invalid or oversized options are ignored. Owner validation stays strict.
+    Invalid or oversized options are ignored. Validate the owner before any
+    coercion; an empty query signals an empty result without owner I/O.
     """
     if not isinstance(payload, dict):
         raise InvalidInput('invalid Search fields', 'payload', 'object_required', payload)
+    owner = payload.get('user_id')
+    if not isinstance(owner, str) or not 0 < len(owner) <= 512:
+        raise InvalidInput('invalid Search', 'user_id', 'string_length_1_512', owner)
+    unknown = sum(key not in {'user_id', 'query', 'top_k', 'options'} for key in payload)
     value = payload.get('query')
     if isinstance(value, list):
+        unknown += sum(key not in {'type', 'text'} for part in value
+                       if isinstance(part, dict) for key in part)
         query = SEPARATOR.join(part['text'] for part in value
             if isinstance(part, dict) and part.get('type') == 'text'
             and isinstance(part.get('text'), str) and part['text'].strip())
+        if query:
+            log_tolerance('query', 'tolerated_content_parts', value)
     else:
         query = value
     if not isinstance(query, str) or not query.strip():
-        raise InvalidInput('invalid Search', 'query', 'nonempty_text_required', value)
+        log_tolerance('query', 'tolerated_empty_query', value)
+        query = ''
     if len(query) > 20000:
+        log_tolerance('query', 'tolerated_query_truncation', query)
         query = query.strip()
         if len(query) > 20000:
             query = query[:10000] + query[-10000:]
     top = payload.get('top_k')
+    if type(top) is not int or not 1 <= top <= 100:
+        log_tolerance('top_k', 'tolerated_top_k', top)
     top = min(100, max(1, top)) if type(top) is int else 100
     options = payload.get('options', [])
     if (not isinstance(options, list) or any(not isinstance(x, str) for x in options)
             or len(json.dumps(options)) > 20000):
+        log_tolerance('options', 'tolerated_options_discarded', options)
         options = []
-    return {'user_id': payload.get('user_id'), 'query': query, 'top_k': top, 'options': options}
+    if unknown:
+        log_tolerance('payload', 'tolerated_unknown_fields', payload, count=unknown)
+    return {'user_id': owner, 'query': query, 'top_k': top, 'options': options}

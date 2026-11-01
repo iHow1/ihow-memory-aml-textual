@@ -44,7 +44,7 @@ def baseline():
 @contextmanager
 def serving(module=deployment, **kwargs):
     with tempfile.TemporaryDirectory() as directory:
-        memory = module.DeploymentMemory(directory, None, None, ENCODING, **kwargs)
+        memory = module.DeploymentMemory(Path(directory) / 'owners', None, None, ENCODING, **kwargs)
         httpd = module.server(memory, key=KEY)
         worker = threading.Thread(target=lambda: httpd.serve_forever(poll_interval=.01), daemon=True)
         worker.start()
@@ -71,6 +71,24 @@ def query(value='marbles', **extra):
 
 
 class CompatibilityTests(unittest.TestCase):
+    def test_rejections_match_107ac55_response_bytes(self):
+        old = baseline()
+        cases = [None, [], 1, {}, query(None), query(''), query(' \t\n'),
+                 query([]), query([{'type': 'text', 'text': ' '}]),
+                 query(7), query({}), query(top_k=0), query(top_k=True),
+                 query(options={}), query(options=[7]), query(extra='unused'),
+                 query(user_id=''), query('x' * 20001),
+                 {'user_id': 'alice', 'top_k': 10}]
+        with serving(old) as (old_port, _), serving() as (default_port, _), \
+                serving(coding_search_tolerant=False) as (false_port, _):
+            for index, body in enumerate(cases):
+                with self.subTest(case=index):
+                    expected = request(old_port, '/search', body)
+                    self.assertEqual(expected[0], 422)
+                    for port in (default_port, false_port):
+                        with self.assertLogs(LOGGER, level='WARNING'):
+                            self.assertEqual(request(port, '/search', body), expected)
+
     def test_default_and_explicit_false_match_107ac55_response_bytes(self):
         old = baseline()
         operations = [('/add', {'user_id': owner, 'session_id': 's1', 'request_id': str(index),
@@ -145,10 +163,48 @@ class TolerantTests(unittest.TestCase):
                     with self.assertLogs(LOGGER, level='WARNING'):
                         self.assertEqual(request(strict, '/search', body)[0], 422)
                     self.assertEqual(request(loose, '/search', body), (200, b'{"data": []}'))
-            for value in ('', ' \t\n', [], [{'type': 'text', 'text': ' '}],
-                          [{'type': 'image', 'text': 'not a text part'}], [None, 1], None):
-                with self.assertLogs(LOGGER, level='WARNING'):
-                    self.assertEqual(request(loose, '/search', query(value))[0], 422)
+
+    def test_empty_queries_return_empty_without_touching_owners(self):
+        cases = [{'user_id': 'alice', 'top_k': 10}] + [query(value) for value in (
+            None, '', ' \t\n\u3000', 7, 1.5, False, {}, {'text': 'not a part'}, [],
+            [{'type': 'text', 'text': ''}], [{'type': 'text', 'text': ' \t\n'}],
+            [{'type': 'image', 'text': 'SENSITIVE'}], [None, 1, 'SENSITIVE'],
+            [{'type': 'text', 'text': None}], [{'text': 'SENSITIVE'}],
+            [{'type': 'text', 'text': 7}, {'type': 'text', 'text': []}])]
+        with serving(coding_search_tolerant=True) as (port, memory):
+            # Include an existing database, so the snapshot is not just empty.
+            request(port, '/add', {'user_id': 'existing', 'session_id': 's1',
+                'request_id': 'fixture', 'messages': [{'role': 'user', 'content': 'synthetic fixture'}]})
+            before = sorted(str(path.relative_to(memory.directory))
+                            for path in memory.directory.rglob('*'))
+            self.assertTrue(before)
+            with patch.object(memory, 'memory', side_effect=AssertionError('owner backend touched')), \
+                    patch.object(deployment.Memory, 'connect', side_effect=AssertionError('database opened')):
+                for index, body in enumerate(cases):
+                    for owner in ('existing', 'new-owner'):
+                        with self.subTest(case=index, owner=owner):
+                            with self.assertLogs(LOGGER, level='WARNING') as logs:
+                                self.assertEqual(request(port, '/search', {**body, 'user_id': owner}),
+                                                 (200, b'{"data": []}'))
+                            self.assertEqual([json.loads(r.getMessage())['error_type'] for r in logs.records],
+                                             ['tolerated_empty_query'])
+                            self.assertEqual(sorted(str(path.relative_to(memory.directory))
+                                                    for path in memory.directory.rglob('*')), before)
+
+    def test_empty_queries_still_validate_object_and_owner_first(self):
+        cases = [None, [], 7, '', {}, {'query': ''}] + [
+            query('', user_id=owner) for owner in ('', 'x' * 513, None, 7, [], {})]
+        with serving(coding_search_tolerant=True) as (port, memory):
+            with patch.object(memory, 'memory', side_effect=AssertionError('owner backend touched')):
+                for index, body in enumerate(cases):
+                    with self.subTest(case=index):
+                        with self.assertLogs(LOGGER, level='WARNING') as logs:
+                            self.assertEqual(request(port, '/search', body)[0], 422)
+                        self.assertEqual(len(logs.records), 1)
+                        diagnostic = json.loads(logs.records[0].getMessage())
+                        self.assertEqual(diagnostic['field'], 'user_id' if isinstance(body, dict) else 'payload')
+                        self.assertFalse(diagnostic['error_type'].startswith('tolerated_'))
+                self.assertEqual(list(memory.directory.iterdir()), [])
 
     def test_exact_unicode_truncation_and_no_midpoint_leak(self):
         value = '  ' + '开' * 10000 + 'discard-this-middle' + '尾' * 10000 + '\n'
@@ -227,12 +283,70 @@ class DiagnosticTests(unittest.TestCase):
                     self.assertEqual(request(port, '/search', query())[0], 422)
             self.assertNotIn('SENSITIVE', logs.records[0].getMessage())
 
-    def test_enabled_mode_logs_no_text_rejection(self):
+    def test_enabled_mode_logs_empty_query_tolerance(self):
         with serving(coding_search_tolerant=True) as (port, _):
             with self.assertLogs(LOGGER, level='WARNING') as logs:
-                self.assertEqual(request(port, '/search', query([{'type': 'image', 'url': 'SENSITIVE'}]))[0], 422)
+                self.assertEqual(request(port, '/search', query([{'type': 'image', 'text': 'SENSITIVE'}])),
+                                 (200, b'{"data": []}'))
+            self.assertEqual(len(logs.records), 1)
             self.assertEqual(json.loads(logs.records[0].getMessage()),
-                {'field': 'query', 'error_type': 'nonempty_text_required', 'type': 'array', 'length': 1})
+                {'field': 'query', 'error_type': 'tolerated_empty_query', 'type': 'array', 'length': 1})
+
+    def test_each_tolerance_logs_one_redacted_warning(self):
+        marker = 'SENSITIVE-MARKER'
+        missing_top = query(marker)
+        del missing_top['top_k']
+        cases = [
+            (query([{'type': 'image', 'text': marker}]), 'query', 'tolerated_empty_query', 'array', 1),
+            (query(marker * 2000), 'query', 'tolerated_query_truncation', 'string', len(marker) * 2000),
+            (query(' ' * 20001 + marker), 'query', 'tolerated_query_truncation', 'string', 20001 + len(marker)),
+            (missing_top, 'top_k', 'tolerated_top_k', 'null', None),
+            (query(marker, top_k=0), 'top_k', 'tolerated_top_k', 'integer', None),
+            (query(marker, top_k=101), 'top_k', 'tolerated_top_k', 'integer', None),
+            (query(marker, top_k=True), 'top_k', 'tolerated_top_k', 'boolean', None),
+            (query(marker, top_k='bad'), 'top_k', 'tolerated_top_k', 'string', 3),
+            (query(marker, options={marker: marker}), 'options', 'tolerated_options_discarded', 'object', 1),
+            (query(marker, options=[7]), 'options', 'tolerated_options_discarded', 'array', 1),
+            (query(marker, options=['x' * 20001]), 'options', 'tolerated_options_discarded', 'array', 1),
+            (query(marker, **{marker: marker, 'CLIENT-FIELD': None}),
+             'payload', 'tolerated_unknown_fields', 'object', 2),
+            (query([{'type': 'text', 'text': marker}, {'type': 'text', 'text': 'two'}]),
+             'query', 'tolerated_content_parts', 'array', 2)]
+        with serving(coding_search_tolerant=True) as (port, _):
+            for body, field, error_type, kind, length in cases:
+                with self.subTest(error=error_type, kind=kind, length=length):
+                    with self.assertLogs(LOGGER, level='WARNING') as logs:
+                        self.assertEqual(request(port, '/search', body)[0], 200)
+                    self.assertEqual(len(logs.records), 1)
+                    record = logs.records[0]
+                    self.assertEqual(record.levelname, 'WARNING')
+                    message = record.getMessage()
+                    for secret in (marker, 'CLIENT-FIELD', KEY):
+                        self.assertNotIn(secret, message)
+                    self.assertEqual(json.loads(message), {'field': field, 'error_type': error_type,
+                                                         'type': kind, 'length': length})
+
+    def test_combined_tolerances_and_nested_unknown_fields(self):
+        marker = 'SENSITIVE-MARKER'
+        body = query([{'type': 'text', 'text': marker * 2000, marker: marker}],
+                     top_k=0, options=[7], **{marker: marker})
+        with serving(coding_search_tolerant=True) as (port, _):
+            with self.assertLogs(LOGGER, level='WARNING') as logs:
+                self.assertEqual(request(port, '/search', body)[0], 200)
+        diagnostics = [json.loads(record.getMessage()) for record in logs.records]
+        self.assertEqual([d['error_type'] for d in diagnostics], [
+            'tolerated_content_parts', 'tolerated_query_truncation', 'tolerated_top_k',
+            'tolerated_options_discarded', 'tolerated_unknown_fields'])
+        self.assertEqual(diagnostics[-1], {'field': 'payload', 'error_type': 'tolerated_unknown_fields',
+                                         'type': 'object', 'length': 2})
+        self.assertNotIn(marker, '\n'.join(logs.output))
+
+    def test_valid_string_requests_emit_no_logs_and_match_strict_bytes(self):
+        with serving() as (strict, _), serving(coding_search_tolerant=True) as (loose, _):
+            for body in (query(), query('  中文\tquery\n', top_k=1, options=['one', 'two']),
+                         query('x' * 20000, top_k=100, options=[])):
+                with self.assertNoLogs(LOGGER, level='WARNING'):
+                    self.assertEqual(request(loose, '/search', body), request(strict, '/search', body))
 
 
 class ConfigTests(unittest.TestCase):

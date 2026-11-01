@@ -132,6 +132,10 @@ class DeploymentMemory:
     def search(self, payload):
         source, payload = payload, (tolerant_search(payload) if self.coding_search_tolerant
                                     else normalize_search(payload))
+        if self.coding_search_tolerant and not payload['query']:
+            # tolerant_search already checked the object and owner. Do not open
+            # or create an owner database for a query without usable text.
+            return {'data': []}
         if not isinstance(payload, dict):
             raise InvalidInput('invalid Search fields', 'payload', 'object_required', payload)
         for field in ('user_id', 'query', 'top_k'):

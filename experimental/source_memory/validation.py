@@ -1,4 +1,4 @@
-"""Rejection metadata that never retains request values or exception messages."""
+"""Validation metadata that never retains request values or exception messages."""
 import json
 import logging
 
@@ -22,4 +22,12 @@ class InvalidInput(ValueError):
 def log_rejection(error, value, field='payload', error_type='validation_error'):
     diagnostic = (error.diagnostic if isinstance(error, InvalidInput)
                   else metadata(field, error_type, value))
+    LOGGER.warning(json.dumps(diagnostic, ensure_ascii=True, allow_nan=False))
+
+
+def log_tolerance(field, error_type, value, *, count=None):
+    diagnostic = metadata(field, error_type, value)
+    if count is not None:
+        # Unknown fields expose only their count, never their names or values.
+        diagnostic['length'] = count
     LOGGER.warning(json.dumps(diagnostic, ensure_ascii=True, allow_nan=False))
